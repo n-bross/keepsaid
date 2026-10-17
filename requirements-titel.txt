@@ -1,0 +1,2 @@
+# Optional für die lokale Erzeugung neuer Aufnahmetitel auf Apple Silicon.
+mlx-lm==0.32.0

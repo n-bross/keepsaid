@@ -1,0 +1,4 @@
+mlx-whisper==0.4.3
+groq==1.7.0
+sherpa-onnx==1.13.8
+numpy==2.5.3
