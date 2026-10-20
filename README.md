@@ -87,6 +87,16 @@ Groq für einen Lauf erzwingend deaktivieren:
 .venv/bin/python worker_mac.py --loop --ohne-groq
 ```
 
+Kurze Aufnahmen warten nicht auf den MossFormer-Neulauf: Die gemeinsame GPU-Sperre
+`work/.worker.lock` gilt nur für die lokale Transkription mit mlx-whisper. Groq-Transkription
+und Sprechertrennung (sherpa-onnx, CPU) laufen parallel. Lange Aufnahmen werden immer erst
+nach allen kurzen lokal transkribiert; erst dann wartet der Worker auf die GPU.
+`--limit` zählt nur lokale Transkriptionen, Groq-Aufnahmen werden immer vollständig abgearbeitet.
+
+Aufnahmen bis `KEEPSAID_OHNE_SPRECHER_BIS` Sekunden (Standard 120) bekommen keine
+Sprechertrennung, sondern durchgehend `speaker1`. Der Stimmabdruck wird trotzdem gebildet,
+damit Namensvorschläge und die Benennung im Review weiter funktionieren.
+
 ## Stimmen im Browser prüfen
 
 Die Oberfläche läuft auf dem NAS direkt neben den Audiodateien:

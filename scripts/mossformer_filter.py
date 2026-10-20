@@ -28,8 +28,9 @@ def run(source, target):
         if engine is None:engine=ClearVoice(task='speech_enhancement',model_names=['MossFormer2_SE_48K'])
         ab=max(0,start-3);end=min(duration,start+63)
         wav=target/'input.wav'
+        # Corrupt Opus packets are dropped on decode; fill them with silence to keep the time axis.
         subprocess.run(['ffmpeg','-nostdin','-v','error','-y','-ss',str(ab),'-i',source,
-                        '-t',str(end-ab),'-ac','1','-ar','48000','-af','volume=0.5',str(wav)],check=True)
+                        '-t',str(end-ab),'-ac','1','-ar','48000','-af','aresample=async=1:first_pts=0,volume=0.5',str(wav)],check=True)
         with torch.inference_mode():audio=np.asarray(engine(input_path=str(wav),online_write=False)).squeeze()
         expected=round((end-ab)*48000)
         if audio.ndim!=1 or not np.isfinite(audio).all() or abs(len(audio)-expected)>480:

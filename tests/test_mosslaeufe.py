@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from asr_abschnitte import abschnitt
 from mosslaeufe import MossLaeufe, REZEPT
@@ -54,6 +55,15 @@ class MossTest(unittest.TestCase):
         self.audio.write_bytes(b'changed recording')
         self.assertEqual(self.store.lesen('a',self.audio),{})
         with self.assertRaises(ValueError):self.ready()
+
+    def test_real_audio_length_wins_over_soundcore_metadata(self):
+        # Metadata says 300 s, the stored file only holds 200 s of audio.
+        with patch.object(MossLaeufe,'dateidauer',return_value=200.0):
+            with self.assertRaises(ValueError):self.ready()
+            data={'rezept':REZEPT,'anbieter':'groq','duration':200,
+                  'segments':[{'text':'Hallo','start':1,'end':2}],'words':[]}
+            self.store.speichern({**self.job('groq'),'status':'bereit','ergebnis':data},self.audio)
+        self.assertEqual(self.store.lesen('a',self.audio)['groq']['status'],'bereit')
 
     def test_backoff_does_not_block_macbook(self):
         for ext in ('.flac','.mp3'):(self.store.audio/(self.store.basis(self.audio)+ext)).touch()
