@@ -51,6 +51,7 @@ class UnsichereSprecherTest(unittest.TestCase):
                      patch.object(worker, 'holen'), \
                      patch.object(worker, 'nach_wav', return_value=np.zeros(32000)), \
                      patch.object(worker, 'modelle_sicherstellen', return_value=(None, None)), \
+                     patch.object(worker, 'OHNE_SPRECHER_BIS', 0), \
                      patch.object(worker, 'diarisieren', return_value=[{'start': 0, 'end': 2, 'speaker': 's'}]), \
                      patch.object(worker, 'stimmabdruecke', return_value=profiles), \
                      patch.object(worker, 'erstelle_titel', return_value='Testgespräch mit unbekannter Person'), \

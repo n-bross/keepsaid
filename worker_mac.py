@@ -73,6 +73,14 @@ GROQ_MODELLE = {
     "gruendlich": "whisper-large-v3",
 }
 
+# Sprachnachrichten bis zu dieser Länge haben praktisch immer nur einen Sprecher;
+# die Sprechertrennung kostet dort mehr Zeit als Groq und bringt nichts.
+OHNE_SPRECHER_BIS = float(env("OHNE_SPRECHER_BIS", "120"))
+
+
+class GpuBelegt(Exception):
+    """Die lokale Transkription muss warten, weil ein anderer Worker die GPU nutzt."""
+
 SEGMENTIERUNG_URL = ("https://github.com/k2-fsa/sherpa-onnx/releases/download/"
                      "speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2")
 EMB_BASIS_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/"
@@ -326,8 +334,29 @@ def sprecher_zu_segment(segment: dict, sprecher_segmente: list[dict]) -> str | N
 
 # ── Ablauf je Aufnahme ─────────────────────────────────────────────────────
 
+def ein_sprecher(segmente: list[dict]) -> list[dict]:
+    """Ganze Sprachnachricht als eine Stimme, damit sie im Review benennbar bleibt."""
+    if not segmente:
+        return []
+    return [{"start": min(s["start"] for s in segmente),
+             "end": max(s["end"] for s in segmente), "speaker": "speaker1"}]
+
+
+def gpu_sperre(warten: bool):
+    """Gemeinsame GPU-Sperre mit moss_worker.py und neu_mlx_worker.py."""
+    fd = open(WORK / ".worker.lock", "a")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX if warten else fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fd.close()
+        raise GpuBelegt("GPU wird gerade von einem anderen Worker genutzt")
+    return fd
+
+
 def verarbeite(name: str, endung: str, stufe: str, mit_sprechern: bool,
-               groq_aktiv: bool = True, groq_max_sekunden: float | None = None) -> dict:
+               groq_aktiv: bool = True, groq_max_sekunden: float | None = None,
+               lokal: str = "warten") -> dict:
+    """lokal: "warten" auf die GPU, "sofort" (sonst GpuBelegt) oder "nie" (immer GpuBelegt)."""
     import mlx_whisper
 
     WORK.mkdir(exist_ok=True)
@@ -377,18 +406,24 @@ def verarbeite(name: str, endung: str, stufe: str, mit_sprechern: bool,
                 erfolg_groq = False
 
         if not erfolg_groq:
-            start = time.time()
-            ergebnis = mlx_whisper.transcribe(str(wav), path_or_hf_repo=MODELLE[stufe],
-                                              language="de", condition_on_previous_text=False, word_timestamps=True)
-            dauer_text = time.time() - start
+            if lokal == "nie":
+                raise GpuBelegt("lokale Transkription für diesen Lauf ausgeschöpft")
+            with gpu_sperre(lokal == "warten"):
+                start = time.time()
+                ergebnis = mlx_whisper.transcribe(str(wav), path_or_hf_repo=MODELLE[stufe],
+                                                  language="de", condition_on_previous_text=False, word_timestamps=True)
+                dauer_text = time.time() - start
             segmente = neue_segmente(ergebnis["segments"])
             genutztes_modell = MODELLE[stufe]
 
         sprecher_segmente, profile, dauer_sprecher, roh_anzahl = [], {}, 0.0, 0
+        sprecher_getrennt = mit_sprechern and audio_sekunden > OHNE_SPRECHER_BIS
         if mit_sprechern:
             seg_modell, emb_modell = modelle_sicherstellen()
             start = time.time()
-            sprecher_segmente = diarisieren(samples, seg_modell, emb_modell)
+            # Der Stimmabdruck entsteht auch ohne Trennung, damit Namensvorschläge weiter greifen.
+            sprecher_segmente = (diarisieren(samples, seg_modell, emb_modell) if sprecher_getrennt
+                                 else ein_sprecher(segmente))
             roh_profile = stimmabdruecke(samples, sprecher_segmente, emb_modell)
 
             dauer_je_sprecher: dict[str, float] = {}
@@ -481,6 +516,7 @@ def verarbeite(name: str, endung: str, stufe: str, mit_sprechern: bool,
             "woerter": sum(len(s["text"].split()) for s in segmente),
             "sprecher_anzahl": len(redeanteil),
             "sprecher_vor_zusammenfassung": roh_anzahl if mit_sprechern else None,
+            "sprecher_getrennt": sprecher_getrennt,
             "sprecher_namen": namen,
             "sprecher_pruefen": [sp for sp, p in profile.items() if p.get("pruefen")],
             "redeanteil_sekunden": dict(sorted(redeanteil.items(), key=lambda x: -x[1])),
@@ -539,7 +575,9 @@ def offene(stufe: str) -> list[tuple[str, str]]:
 
 def main() -> int:
     WORK.mkdir(parents=True, exist_ok=True)
-    lock_datei = WORK / ".worker.lock"
+    # Nur gegen einen zweiten worker_mac.py; die GPU-Sperre gilt allein für mlx_whisper,
+    # damit kurze Aufnahmen über Groq nicht hinter dem MossFormer-Neulauf warten.
+    lock_datei = WORK / ".mac_worker.lock"
     lock_fd = open(lock_datei, "w")
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -549,7 +587,8 @@ def main() -> int:
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--stufe", choices=MODELLE, default="gruendlich")
-    ap.add_argument("--limit", type=int, default=0, help="0 = alles")
+    ap.add_argument("--limit", type=int, default=0,
+                    help="höchstens so viele lokale Transkriptionen je Lauf, 0 = alles (Groq zählt nicht)")
     ap.add_argument("--loop", action="store_true", help="danach auf neue Aufnahmen warten")
     ap.add_argument("--nur", help="genau diese Aufnahme, auch wenn sie schon fertig ist")
     ap.add_argument("--ohne-sprecher", action="store_true", help="nur Text, keine Sprechertrennung")
@@ -558,7 +597,7 @@ def main() -> int:
                     help=f"Maximale Audiolänge für Groq in Sekunden (Default: {int(GROQ_MAX_AUDIO_SEKUNDEN)}s)")
     args = ap.parse_args()
 
-    fertig = 0
+    fertig = lokal_fertig = 0
     while True:
         try:
             if args.nur:
@@ -585,20 +624,32 @@ def main() -> int:
             continue
 
         log(f"{len(liste_offen)} offen")
-        for name, endung in liste_offen:
-            if args.limit and fertig >= args.limit:
-                log(f"Limit {args.limit} erreicht")
-                return 0
-            log(f"→ {name}")
-            try:
-                s = verarbeite(name, endung, args.stufe, not args.ohne_sprecher,
-                               groq_aktiv=not args.ohne_groq, groq_max_sekunden=args.groq_max_sekunden)
-            except Exception as exc:
-                log(f"  FEHLER {name}: {exc}")
-                continue
-            fertig += 1
-            log(f"  fertig: {zeit(s['audio_sekunden'])} Audio in {zeit(s['rechen_sekunden_text'] + s['rechen_sekunden_sprecher'])}"
-                f" (Faktor {s['faktor']}), {s['sprecher_anzahl']} Sprecher, {s['woerter']} Wörter")
+        # Erst alles, was ohne Warten geht (Groq oder freie GPU); auf die GPU wird
+        # nur für die zurückgestellten langen Aufnahmen gewartet.
+        zurueckgestellt = []
+        for durchgang, aufnahmen in (("sofort", liste_offen), ("warten", zurueckgestellt)):
+            for name, endung in aufnahmen:
+                limit_erreicht = bool(args.limit and lokal_fertig >= args.limit)
+                log(f"→ {name}")
+                try:
+                    s = verarbeite(name, endung, args.stufe, not args.ohne_sprecher,
+                                   groq_aktiv=not args.ohne_groq, groq_max_sekunden=args.groq_max_sekunden,
+                                   lokal="nie" if limit_erreicht else durchgang)
+                except GpuBelegt as exc:
+                    if durchgang == "sofort" and not limit_erreicht:
+                        log(f"  zurückgestellt: {exc}")
+                        zurueckgestellt.append((name, endung))
+                    else:
+                        log(f"  übersprungen, Limit {args.limit} lokaler Transkriptionen erreicht")
+                    continue
+                except Exception as exc:
+                    log(f"  FEHLER {name}: {exc}")
+                    continue
+                fertig += 1
+                if not s["modell"].startswith("groq/"):
+                    lokal_fertig += 1
+                log(f"  fertig: {zeit(s['audio_sekunden'])} Audio in {zeit(s['rechen_sekunden_text'] + s['rechen_sekunden_sprecher'])}"
+                    f" (Faktor {s['faktor']}), {s['sprecher_anzahl']} Sprecher, {s['woerter']} Wörter")
         if args.nur or not args.loop:
             log(f"Ende, {fertig} Aufnahme(n)")
             return 0
