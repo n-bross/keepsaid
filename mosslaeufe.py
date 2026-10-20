@@ -3,6 +3,7 @@ import hashlib
 import json
 import math
 import sqlite3
+import subprocess
 import time
 from pathlib import Path
 
@@ -32,6 +33,15 @@ class MossLaeufe:
     @staticmethod
     def basis(datei):
         return hashlib.sha256((Wortzeiten.basis(datei) + REZEPT).encode()).hexdigest()
+
+    @staticmethod
+    def dateidauer(datei):
+        try:
+            dauer=float(subprocess.check_output(['ffprobe','-v','error','-show_entries','format=duration',
+                '-of','csv=p=0',str(datei)],timeout=30,stderr=subprocess.DEVNULL))
+        except (OSError,ValueError,subprocess.SubprocessError):
+            return None
+        return dauer if math.isfinite(dauer) and dauer>0 else None
 
     def einreihen(self, name, datei, dauer):
         basis = self.basis(datei)
@@ -110,7 +120,9 @@ class MossLaeufe:
                     row=db.execute('SELECT dauer FROM runs WHERE name=? AND basis=? AND anbieter=?',
                                    (name,basis,anbieter)).fetchone()
                 dauer=float(result['duration'])
-                if not row or not math.isfinite(dauer) or dauer<=0 or abs(dauer-row['dauer'])>max(2,row['dauer']*.005):
+                # Soundcore metadata can overstate the length; the stored audio file is authoritative.
+                soll=(self.dateidauer(datei) or row['dauer']) if row else 0
+                if not row or not math.isfinite(dauer) or dauer<=0 or abs(dauer-soll)>max(2,soll*.005):
                     raise ValueError('Audiodauer passt nicht zum Auftrag.')
                 for s in result['segments']:
                     if not isinstance(s.get('text'),str) or not 0<=float(s['start'])<float(s['end'])<=dauer+.05:
