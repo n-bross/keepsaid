@@ -624,10 +624,10 @@ def main() -> int:
             continue
 
         log(f"{len(liste_offen)} offen")
-        # Erst alles, was ohne Warten geht (Groq oder freie GPU); auf die GPU wird
-        # nur für die zurückgestellten langen Aufnahmen gewartet.
+        # Erst alles über Groq, damit kurze Aufnahmen nie hinter einer stundenlangen
+        # lokalen Transkription warten; lange Aufnahmen danach mit GPU.
         zurueckgestellt = []
-        for durchgang, aufnahmen in (("sofort", liste_offen), ("warten", zurueckgestellt)):
+        for durchgang, aufnahmen in (("nie", liste_offen), ("warten", zurueckgestellt)):
             for name, endung in aufnahmen:
                 limit_erreicht = bool(args.limit and lokal_fertig >= args.limit)
                 log(f"→ {name}")
@@ -636,8 +636,8 @@ def main() -> int:
                                    groq_aktiv=not args.ohne_groq, groq_max_sekunden=args.groq_max_sekunden,
                                    lokal="nie" if limit_erreicht else durchgang)
                 except GpuBelegt as exc:
-                    if durchgang == "sofort" and not limit_erreicht:
-                        log(f"  zurückgestellt: {exc}")
+                    if durchgang == "nie" and not limit_erreicht:
+                        log("  zurückgestellt: braucht lokale Transkription")
                         zurueckgestellt.append((name, endung))
                     else:
                         log(f"  übersprungen, Limit {args.limit} lokaler Transkriptionen erreicht")

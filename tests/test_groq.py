@@ -126,11 +126,11 @@ class GroqIntegrationTest(unittest.TestCase):
                 worker.verarbeite("lang", ".wav", "schnell", False, lokal="nie")
         mock_mlx.transcribe.assert_not_called()
 
-    def test_belegte_gpu_stellt_lange_aufnahmen_zurueck(self):
+    def test_lange_aufnahmen_erst_nach_allen_kurzen(self):
         aufrufe = []
         def verarbeite(name, endung, stufe, mit_sprechern, **kw):
             aufrufe.append((name, kw["lokal"]))
-            if name == "lang" and kw["lokal"] == "sofort":
+            if name == "lang" and kw["lokal"] == "nie":
                 raise worker.GpuBelegt("belegt")
             modell = "mlx/x" if name == "lang" else "groq/x"
             return {"modell": modell, "audio_sekunden": 1, "rechen_sekunden_text": 0,
@@ -140,7 +140,7 @@ class GroqIntegrationTest(unittest.TestCase):
              patch.object(worker, "verarbeite", side_effect=verarbeite), \
              patch("sys.argv", ["worker_mac.py", "--limit", "1"]):
             self.assertEqual(worker.main(), 0)
-        self.assertEqual(aufrufe, [("lang", "sofort"), ("kurz1", "sofort"), ("kurz2", "sofort"), ("lang", "warten")])
+        self.assertEqual(aufrufe, [("lang", "nie"), ("kurz1", "nie"), ("kurz2", "nie"), ("lang", "warten")])
 
 
 if __name__ == "__main__":

@@ -89,8 +89,8 @@ Groq für einen Lauf erzwingend deaktivieren:
 
 Kurze Aufnahmen warten nicht auf den MossFormer-Neulauf: Die gemeinsame GPU-Sperre
 `work/.worker.lock` gilt nur für die lokale Transkription mit mlx-whisper. Groq-Transkription
-und Sprechertrennung (sherpa-onnx, CPU) laufen parallel. Ist die GPU belegt, wird eine lange
-Aufnahme zurückgestellt, bis alle kurzen fertig sind; erst dann wartet der Worker auf die GPU.
+und Sprechertrennung (sherpa-onnx, CPU) laufen parallel. Lange Aufnahmen werden immer erst
+nach allen kurzen lokal transkribiert; erst dann wartet der Worker auf die GPU.
 `--limit` zählt nur lokale Transkriptionen, Groq-Aufnahmen werden immer vollständig abgearbeitet.
 
 Aufnahmen bis `KEEPSAID_OHNE_SPRECHER_BIS` Sekunden (Standard 120) bekommen keine
