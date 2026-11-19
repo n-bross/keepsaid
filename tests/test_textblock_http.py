@@ -46,3 +46,42 @@ class TextblockHTTPTest(unittest.TestCase):
         self.assertTrue(all(not sp['lernbar'] for sp in split['sprecher']))
         undone=self.post('/api/aufteilung',{'aufnahme':'test','aktion':'zurueck','version':split['aufteilung_version']})
         self.assertEqual(undone['bereiche'],d['bereiche'])
+
+
+class AbschnittBenennenHTTPTest(unittest.TestCase):
+    post = TextblockHTTPTest.post
+
+    def setUp(self):
+        TextblockHTTPTest.setUp(self)
+        self.original = {'segments': [{'start': 0, 'end': 10, 'speaker': 's1', 'text': 'Erster Teil.'},
+                                      {'start': 10, 'end': 12, 'speaker': 's2', 'text': 'Dazwischen.'},
+                                      {'start': 12, 'end': 20, 'speaker': 's1', 'text': 'Zweiter Teil.'}]}
+        (self.root / 'transkripte/test.gruendlich.json').write_text(json.dumps(self.original))
+
+    def namen(self, d):
+        namen = {sp['id']: sp['name'] for sp in d['sprecher']}
+        return [namen.get(b['speaker_ids'][0]) for b in d['bloecke']]
+
+    def benennen(self, block, name):
+        sprecher = block['speaker_ids'][0]
+        return self.post('/api/review', {'aufnahme': 'test', 'sprecher': sprecher, 'name': name,
+                                         'aktion': 'bestaetigen', 'block': block['id']})
+
+    def test_bestaetigte_abschnitte_werden_nicht_ueberschrieben(self):
+        d = self.app.detail('test')
+        self.assertEqual(self.namen(d), ['Anna', None, 'Anna'])
+        d = self.benennen(d['bloecke'][2], 'Ben')
+        self.assertTrue(d['nur_abschnitt'])
+        self.assertEqual(self.namen(d), ['Anna', None, 'Ben'])
+        # Unbenannte Stimme: wie bisher für die ganze Stimme.
+        d = self.benennen(d['bloecke'][1], 'Carla')
+        self.assertNotIn('nur_abschnitt', d)
+        self.assertEqual(self.namen(d), ['Anna', 'Carla', 'Ben'])
+        # Vorhandener Name: Abschnitt wird der bestehenden Person zugeordnet.
+        d = self.benennen(d['bloecke'][0], 'ben')
+        self.assertEqual(self.namen(d), ['Ben', 'Carla', 'Ben'])
+        self.assertEqual(len({b['speaker_ids'][0] for b in d['bloecke'] if b['speaker_ids'][0] != 's2'}), 1)
+        # Gleicher Name bestätigt nur, ohne neue Zeitkorrektur.
+        version = d['aufteilung_version']
+        d = self.benennen(d['bloecke'][1], 'Carla')
+        self.assertEqual(d['aufteilung_version'], version)
