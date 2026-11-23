@@ -356,6 +356,26 @@ class Anwendung:
                 quellen={b['speaker'] for b in d['bereiche'] if b['start'] < ende and b['end'] > start} if quelle == '__bereich__' else None)
         return self.detail(name)
 
+    def abschnitt_benennen(self, d, speaker, block_id, neuer_name):
+        """Einen einzelnen Abschnitt einer schon benannten Stimme einer anderen Person zuordnen."""
+        neuer_name = neuer_name.strip()
+        if len(neuer_name) > 120:
+            raise ValueError('Bitte einen Namen mit 1–120 Zeichen eingeben.')
+        block = next((b for b in d['bloecke'] if b['id'] == block_id), None)
+        if not block or speaker not in block['speaker_ids']:
+            raise ValueError('Dieser Abschnitt wurde inzwischen geändert. Bitte die Aufnahme neu öffnen.')
+        start, ende = block['start'], block['end']
+        if start is None or ende is None:
+            raise ValueError('Für diesen Abschnitt fehlen noch Zeitangaben. Bitte später erneut versuchen.')
+        ende = min(ende, d['dauer'])
+        if start >= ende:
+            raise ValueError('Für diesen Abschnitt fehlen noch Zeitangaben. Bitte später erneut versuchen.')
+        schluessel = neuer_name.casefold()
+        ziel = next((s['id'] for s in d['sprecher'] if s['id'] != speaker and s['name']
+                     and s['name'].strip().casefold() == schluessel), 'neu')
+        return self.aufteilen({'aufnahme': d['name'], 'quelle': speaker, 'ziel': ziel, 'start': start,
+                               'ende': ende, 'name': neuer_name, 'version': d['aufteilung_version']})
+
     @lru_cache(maxsize=128)
     def audio_url(self, datei):
         url = self.quelle.share + '/audio/' + urllib.parse.quote(datei, safe='')
@@ -643,6 +663,15 @@ class Handler(BaseHTTPRequestHandler):
             sp = next((s for s in d['sprecher'] if s['id'] == speaker),None)
             if not sp:
                 raise ValueError('Sprecher nicht gefunden.')
+            neuer_name = data.get('name')
+            if (data.get('aktion') != 'entfernen' and data.get('block') is not None and sp['name']
+                    and isinstance(neuer_name, str) and neuer_name.strip()
+                    and neuer_name.strip().casefold() != sp['name'].strip().casefold()):
+                # Bereits benannte Stimme: nur diesen Abschnitt umhängen, damit
+                # vorher bestätigte Abschnitte derselben Stimme ihren Namen behalten.
+                result = self.app.abschnitt_benennen(d, speaker, data['block'], neuer_name)
+                result['nur_abschnitt'] = True
+                return self.antwort(200, result)
             if data.get('aktion') == 'entfernen':
                 self.app.stimmen.entfernen(name, speaker, d['modell'])
             elif not sp['lernbar']:
